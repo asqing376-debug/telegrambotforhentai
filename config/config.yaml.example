@@ -1,0 +1,54 @@
+# Telegram
+BOT_TOKEN: "your_bot_token"
+admin:
+  - 123456789
+allowed_group:
+  - -1001234567890
+
+# E-Hentai（勿提交真实 Cookie 到仓库）
+eh_cookie: "ipb_member_id=xxx; ipb_pass_hash=xxx; igneous=xxx"
+proxy: null   # 例如 "http://127.0.0.1:7890"
+
+# 目录（末尾不加 /）
+download_folder: "./download"
+temp_folder: "./temp"
+
+# 图床（CloudFlare ImgBed 风格，勿提交 Token 到仓库）
+imgbed_base_url: "https://yaoianime.cc"
+imgbed_api_token: "your_imgbed_api_token"
+
+# Telegraph（勿将 ph_token 提交到仓库）
+ph_token: "your_telegraph_token"
+author_name: "筋肉控"
+author_url: "https://t.me/jinroukong"
+
+# 频道 ID：备用下载（文件名+压缩包+密码）、主推送（缩略图+描述+Telegraph+备用链接）
+channel_backup_id: -1001234567890
+channel_main_id: -1001234567891
+
+# 压缩包密码：固定字符串或留空使用默认
+archive_password: "gallery"
+
+# 并发与限制
+max_concurrent_tasks: 2
+task_per_user_per_minute: 2
+
+# 可选：GP 告警阈值（若需监控）
+gp_alert_threshold: 1000
+
+# 数据库（SQLite，用于画廊去重与爬取偏移记录）
+db_path: "./data/bot.db"
+
+# 定时爬取画廊列表
+crawl_enabled: false
+crawl_interval: 3600          # 爬取间隔（秒）
+crawl_sources:
+  - name: "最新日文"
+    url: "https://e-hentai.org/?f_search=language:japanese"
+    max_pages: 3
+#  - name: "收藏夹"
+#    url: "https://e-hentai.org/favorites.php"
+#    max_pages: 2
+crawl_page_delay: 2           # 翻页间隔（秒），防止风控
+crawl_retry_limit: 3          # 单个爬取源失败最大重试次数
+crawl_alert_threshold: 5      # 连续失败达到此阈值后向管理员告警

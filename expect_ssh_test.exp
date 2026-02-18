@@ -1,0 +1,45 @@
+#!/usr/bin/expect -f
+# 使用 expect 连接测试服务器并执行图床+Telegraph 测试
+# 用法：expect expect_ssh_test.exp  或  ./expect_ssh_test.exp
+# 依赖：expect、ssh、scp（Linux / WSL / Git Bash 等）
+# Windows 无 expect 时：在 WSL 中 apt install expect 后执行；或使用 Git Bash 若已装 expect
+
+set timeout 120
+set host "103.93.252.172"
+set user "root"
+set port "22"
+set password "XdWNOwvfzgkvkGy1EnqS"
+set script_dir [file dirname [info script]]
+set py_script "$script_dir/run_test_on_server.py"
+
+if {![file exists $py_script]} {
+    puts "错误: 未找到 $py_script"
+    exit 1
+}
+
+# 1) SCP 上传测试脚本
+puts ">>> 上传 run_test_on_server.py ..."
+spawn scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -P $port $py_script ${user}@${host}:/root/
+expect {
+    -re "(?i)password:" { send "$password\r"; exp_continue }
+    "yes/no" { send "yes\r"; exp_continue }
+    eof { }
+    timeout { puts "scp 超时"; exit 1 }
+}
+set scp_result [wait]
+if {[lindex $scp_result 3] != 0} {
+    puts "scp 失败"
+    exit 1
+}
+puts "上传完成。\n"
+
+# 2) SSH 执行测试
+puts ">>> SSH 执行测试 ..."
+spawn ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p $port ${user}@${host} "python3 /root/run_test_on_server.py"
+expect {
+    -re "(?i)password:" { send "$password\r"; exp_continue }
+    "yes/no" { send "yes\r"; exp_continue }
+    eof { }
+    timeout { puts "\nssh 超时"; exit 1 }
+}
+wait

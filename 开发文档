@@ -1,0 +1,258 @@
+Telegram Bot  
+功能：
+在指定ID的telegram群组内，接受画廊链接消息，匹配 https://e[-x]hentai.org/g/<gid>/<token> 后触发，解析指定画廊，获取重采样下载链接，通过下载链接下载画廊作品 zip、解压、自然排序重命名，调上传 API 逐图上传，用上传后的 URL 生成 Telegraph，同一telegraph页面上传图片url超过200页后自动分页；
+
+下载画廊作品 zip，解压、自然排序重命名后，以画廊“副标题（日文）”的内容进行命名并做非法字符清理，压缩包设置密码；本地上传并校验完整无误后，立即清理对应的临时文件与压缩包，避免长期占用磁盘空间。
+
+在下载 zip → 解压 → 自然排序重命名 → 使用画廊「副标题（日文）」命名 → 清理非法字符 → 打包加密压缩包之后，以「文件名 + 文件 + 密码」的格式发送到指定频道，并获取该频道消息链接。
+
+拉取画廊信息后将重命名的压缩包和画廊副标题（日本）发送到指定频道并获取链接，链接标签为备用下载链接。
+
+拉取画廊信息后发缩略图与描述（中文翻译），telegraph链接，备用下载链接整合成一条信息，发送至指定频道。
+
+同时接收多链接时自动进行任务排队
+
+通过e-hentai账号密码自动获取cookie并自动刷新包活，定时监控GP/Credits消耗并向管理员用户发送提醒。
+
+定时爬取指定画廊列表页面（如标签订阅、搜索条件、收藏夹等），自动发现新增画廊作品链接；与已处理记录比对去重后，将新链接注入任务队列，由现有的解析→下载→上传→推送流水线统一处理，实现无人值守的自动归档。
+
+发送到指定频道的整合消息按以下固定顺序排列：
+  语言:
+  原作:
+  艺术家:
+  团队:
+  混合:
+  其他:
+  男性:
+  页数:
+  预览:（Telegraph 在线阅读链接）
+  原始地址:（E-Hentai 画廊原始链接）
+  原档链接:（频道内压缩包消息的转发链接）
+其中标签类字段（语言、原作、艺术家、团队、混合、其他、男性）从画廊元数据中提取，标签值翻译为中文后显示，若画廊中不存在该分类标签则整行跳过不输出；预览为 Telegraph 页面链接；原始地址为 E-Hentai 画廊 URL；原档链接为上传到频道的加密压缩包对应的消息链接。缩略图作为消息封面一并发送。
+
+自动检测服务状态，定时清理服务器缓存、恢复初始状态，保证无管理持续运行。
+
+技术设计与实现说明：
+
+一、技术栈与运行环境
+1. 语言与版本
+   - 后端统一使用 Python 3.10+，方便复用 `archive-at-home` 现有实现与依赖生态。
+2. Bot / Server 端主要依赖
+   - `python-telegram-bot`：接收 Telegram 消息、处理回调按钮、定时任务。
+   - `fastapi` + `uvicorn`：对外提供 HTTP API（如解析接口、任务查询接口）、对内提供给解析节点调用的接口。
+   - `httpx` 或 `requests`：访问 E-Hentai、Telegraph 等 HTTP 服务。
+   - 可选数据库：如 `tortoise-orm` + SQLite/PostgreSQL，用于记录用户信息、任务记录、GP/Credits 变动等。
+3. Client / 解析节点主要依赖
+   - `fastapi`：暴露解析与下载服务，供 Bot / Server 调用。
+   - `httpx`、`beautifulsoup4`：请求并解析 E-Hentai 页面，获取画廊信息与下载链接。
+4. 运行环境与网络
+   - 服务器需能稳定访问 Telegram API 与 E-Hentai，支持配置 HTTP/HTTPS 代理。
+   - 磁盘空间需能容纳临时解压后的画廊文件，建议预留数十 GB 以上。
+
+二、系统总体架构说明（参考 archive-at-home）
+1. 分布式结构
+   - Server（Bot 服务端）：
+     - 职责：接收 Telegram 消息，识别 E-Hentai 链接，调度解析任务，汇总结果并推送到指定频道。
+     - 参考实现：`server/main.py` 作为入口，业务逻辑拆分在 `server/handlers/` 下（如 `resolver.py` 等）。
+   - Client（解析 / 归档节点，可多实例）：
+     - 职责：实际访问 E-Hentai，消耗 GP/Credits，获取重采样下载链接，完成下载、解压、重命名与打包等工作，并将结果回传给 Server。
+     - 参考实现：`client` 目录及 `client/utils/ehentai.py`。
+2. 模块关系（文字示意）
+   - Telegram 用户/群组 → Telegram Bot → Server 业务逻辑（解析消息、入队）→ 任务队列 → Client 节点（访问 E-Hentai、处理文件）→ 上传/Telegraph → 通知频道消息。
+3. 单机简化部署
+   - 支持在一台机器上同时运行 Server 与 Client，将解析任务指向本机节点，便于开发与小规模私用部署。
+
+三、核心模块与职责划分
+1. 链接接收与解析模块（Bot / Server 侧）
+   - 监听指定群组 / 私聊消息，匹配 `https://e[-x]hentai.org/g/<gid>/<token>` 格式。
+   - 解析出 `gid` / `token`，做基础合法性校验与去重（同一画廊短时间内只处理一次，避免重复消耗资源）。
+   - 可参考：`server/handlers/resolver.py` 中对消息的解析与回复逻辑。
+2. 画廊列表定时爬取模块
+   - 定时（可配置间隔）访问一个或多个画廊列表页面（如标签订阅页、搜索结果页、收藏夹页面等），逐页抓取画廊条目并解析出 `gid` / `token`。
+   - 将获取到的画廊链接与「已处理画廊记录表」进行比对去重，仅保留从未处理过的新增画廊。
+   - 对新增画廊按照列表顺序或发布时间排序，批量注入任务队列，由现有的任务管理模块统一调度。
+   - 记录每次爬取的最新偏移（如最后处理的 `gid` 或页码），下次爬取时只获取增量部分，减少重复请求与 GP/Credits 消耗。
+   - 支持配置多个爬取源（多组列表 URL / 搜索关键词），各源独立维护爬取进度。
+   - 爬取频率、并发数、单次最大抓取页数均可配置，防止过高频率触发 E-Hentai 风控。
+   - 爬取异常（网络错误、被 ban、Cookie 失效等）时自动重试并在超过阈值后向管理员发送告警。
+3. 任务管理与队列模块
+   - 将每一个画廊解析请求抽象为「任务」，支持同时接收多链接时自动排队；任务来源区分「用户手动提交」与「定时爬取自动发现」，便于统计与优先级管理。
+   - 维护任务状态：排队中 / 处理中 / 成功 / 失败，并限制全局并发数与单用户速率，防止刷任务。
+   - 当有空闲 Client 节点时，从队列中取出任务分发执行。
+4. E-Hentai 访问与 Cookie / GP 管理模块
+   - 封装访问 E-Hentai 的逻辑，统一从配置中读取 Cookie（`ipb_member_id`、`ipb_pass_hash`、`igneous` 等）。
+   - 提供接口：获取画廊信息（含完整标签分类：language / parody / artist / group / misc / other / male 等，标签值需翻译为中文供频道消息使用）、预估 GP/Credits 消耗、获取下载链接。
+   - 实现周期性检查 GP/Credits 余额，接近阈值时向管理员发送提醒消息。
+   - 若实现自动获取 Cookie，则负责定期刷新并写回配置或安全存储。
+   - 可参考：`server/utils/ehentai.py`、`client/utils/ehentai.py` 的封装方式。
+5. 下载、重命名与打包模块
+   - 根据重采样下载链接，拉取画廊 zip，解压后按页码进行自然排序重命名。
+   - 使用画廊「副标题（日文）」作为压缩包命名源，对文件名做非法字符清理。
+   - 对压缩包设置密码（文档中统一约定密码规则，便于用户使用），并返回压缩包路径与最终文件名。
+   - 完成打包后，由 Bot 端以「文件名 + 压缩包文件 + 密码」三段内容的形式发送到指定频道，并获取该消息链接作为后续备用下载链接引用。
+   - 当确认上传成功且文件在远端可访问后，主动删除对应的本地 zip、解压目录及临时文件，仅保留必要的元数据记录，保证服务器磁盘与 I/O 负载保持在健康水平。
+6. 上传与 Telegraph 页面生成模块
+   - 将处理后的图片或压缩包上传到指定存储 / 图床。
+   - 图片上传接口优先参考 CloudFlare ImgBed 风格的 HTTP API：向 `<IMG_BED_BASE_URL>/upload` 发送 `multipart/form-data` POST 请求，带上 `Authorization: Bearer <API_TOKEN>`（或 `Authorization: <API_TOKEN>`）请求头，返回值中解析出最终可访问的图片 URL，用于后续 Telegraph 与频道消息中引用（参考文档：`https://cfbed.sanyue.de/api/`）。
+   - 使用 Telegraph API 创建图文页面，将每张图片的 URL 作为内容插入；当单页图片数超过 200 张时自动分页，生成多页 Telegraph 文章并记录首页链接。
+7. 频道推送与消息组装模块
+   - 从画廊元数据中提取各标签分类，并按固定顺序组装频道消息正文：
+     ```
+     语言: <language 标签，翻译为中文，多个用逗号分隔>
+     原作: <parody 标签，翻译为中文>
+     艺术家: <artist 标签，翻译为中文>
+     团队: <group 标签，翻译为中文>
+     混合: <misc 标签，翻译为中文>
+     其他: <other 标签，翻译为中文>
+     男性: <male 标签，翻译为中文>
+     页数: <画廊总页数>
+     预览: <Telegraph 在线阅读链接>
+     原始地址: <E-Hentai 画廊 URL>
+     原档链接: <频道内加密压缩包消息的链接>
+     ```
+   - 缩略图作为消息封面（photo / thumbnail）随正文一同发送。
+   - 标签分类字段若画廊中不存在该分类，则整行跳过不输出，仅保留有值的字段行。
+   - 预览字段：填入 Telegraph 页面首页链接；若存在分页则追加"（共 N 页）"标注。
+   - 原档链接字段：填入压缩包文件上传到指定频道后获取的消息转发链接，用户可直接跳转获取文件。
+   - 记录频道消息 ID 以及关联的画廊 ID，方便后续编辑或删除。
+   - 无论任务来源是「用户手动提交」还是「定时爬取自动发现」，最终推送的消息格式保持一致。
+8. 定时任务与运维模块
+   - 周期性执行：画廊列表定时爬取调度、Cookie 自动刷新、GP/Credits 监控与告警、服务心跳检测、服务器缓存与临时文件清理。
+   - 画廊列表爬取调度由本模块统一管理生命周期：启动、暂停、恢复、强制立即执行等操作可通过管理员 Bot 命令控制。
+   - 参考 archive-at-home 中 `server/main.py` 的后台任务模式，实现数据库检查点与节点状态刷新等逻辑。
+
+四、配置文件设计与关键配置项
+1. 配置文件形式
+   - 推荐使用 YAML 配置，分别为：
+     - Server 配置（如 `server/config/config.yaml`）
+     - Client 配置（如 `client/config/config.yaml`）
+   - 可直接参考：`server/config/config.yaml.example` 与 `client/config/config.yaml.example`，在此基础上裁剪与扩展。
+2. Telegram 相关关键项
+   - `BOT_TOKEN`：Telegram Bot Token，必须保密，不应提交到代码仓库。
+   - `admin`：管理员用户 ID 列表，用于接收告警、管理命令。
+   - `allowed_group` / `allowed_channel`：允许使用本 Bot 的群组 / 频道 ID 白名单。
+3. E-Hentai 相关关键项
+   - `eh_cookie` / `cookies`：包含 `ipb_member_id`、`ipb_pass_hash`、`igneous` 等字段的 Cookie 字符串。
+   - 是否启用 EX 站、每日最大 GP 消耗（如 `max_GP_cost`）、是否允许原图下载等策略。
+   - `proxy`：访问 E-Hentai 时使用的 HTTP/HTTPS 代理配置（可选）。
+4. 存储与上传相关关键项
+   - `download_folder`：下载缓存目录，用于存放 zip 与解压后的图片。
+   - `temp_folder`：临时目录，用于中间处理文件。
+   - `rclone_upload_remote` 或其他上传目标：如网盘 remote 名称、对象存储桶名等。
+   - `imgbed_base_url`：图片床基础访问地址，例如 `https://your-cloudflare-imgbed-url`，用于拼接 `/upload` 等 API 路径。
+   - `imgbed_api_token`：图片床 API Token，仅用于向 `/upload` 等接口鉴权，调用时写入 `Authorization` 请求头，必须妥善保管。
+   - 密码压缩策略：是否统一密码、是否按用户 / 画廊动态生成等。
+5. Telegraph 与通知相关关键项
+   - `ph_token`：Telegraph token。
+   - `author_name` / `author_url`：Telegraph 文章作者信息。
+   - 通知频道 ID、失败告警频道 / 私聊 ID。
+6. 定时爬取相关关键项
+   - `crawl_enabled`：是否启用定时爬取功能（布尔值，默认 `false`）。
+   - `crawl_interval`：爬取间隔时间（如 `30m`、`1h`、`6h`），支持分钟/小时单位。
+   - `crawl_sources`：爬取源列表，每项包含：
+     - `name`：爬取源名称（如"最新日文"、"收藏夹"），用于日志与管理。
+     - `url`：画廊列表 URL 或搜索条件 URL（支持 E-Hentai / EX-Hentai）。
+     - `max_pages`：单次爬取最大页数（防止首次启动时抓取过多历史数据）。
+   - `crawl_concurrency`：爬取列表页面时的并发数（建议 1-2，防止风控）。
+   - `crawl_task_priority`：自动爬取产生的任务优先级（默认低于手动提交，避免占用手动用户的处理资源）。
+   - `crawl_retry_limit`：爬取失败时的最大重试次数。
+   - `crawl_alert_threshold`：连续失败达到此阈值后向管理员发送告警。
+7. 监控与安全相关关键项
+   - Cookie 自动获取接口相关配置（入口 URL、访问密码等）。
+   - GP/Credits 告警阈值，触发时向管理员推送提醒。
+   - 日志级别与敏感字段脱敏开关。
+
+五、关键处理流程示意
+1. 画廊解析与频道推送主流程
+   - 用户在指定 Telegram 群组内发送 E-Hentai 画廊链接。
+   - Bot 端识别链接并解析出 `gid` / `token`，将任务写入队列。
+   - Server 从队列中选出任务，并选择空闲的 Client 节点执行。
+   - Client 使用配置的 Cookie 访问 E-Hentai，拉取画廊信息与重采样下载链接，完成下载、解压、重命名与打包，并上传到存储 / 图床。
+   - Client 将元数据、Telegraph 链接、备用下载链接等结果回传给 Server。
+   - Server 按固定字段顺序（语言→原作→艺术家→团队→混合→其他→男性→页数→预览→原始地址→原档链接）组装消息，连同缩略图发送到指定频道。
+2. 定时爬取画廊列表流程
+   - Server 端定时任务按配置的间隔触发爬取调度器。
+   - 爬取调度器依次遍历所有配置的爬取源（列表 URL / 搜索条件），从上次记录的偏移位置开始，逐页请求 E-Hentai 列表页面。
+   - 解析页面中每个画廊条目的 `gid` / `token`，与已处理画廊记录表比对。
+   - 未处理过的新增画廊链接批量写入任务队列（来源标记为「自动爬取」）。
+   - 更新该爬取源的最新偏移，等待下一轮触发。
+   - 队列中的爬取任务进入正常的「Client 节点解析→下载→上传→推送」流水线，与手动提交任务共享同一套处理逻辑。
+3. Mermaid 时序图示例（画廊解析与推送 — 手动提交）
+```mermaid
+sequenceDiagram
+    participant User as User
+    participant TgBot as TgBot
+    participant Server as Server
+    participant Queue as TaskQueue
+    participant Client as ClientNode
+    participant EH as EHentai
+    participant Store as Storage
+    participant TGChan as TgChannel
+
+    User->>TgBot: 发送画廊链接
+    TgBot->>Server: 转发消息(gid/token)
+    Server->>Queue: 创建解析任务
+    Queue->>Client: 分配任务
+    Client->>EH: 请求画廊信息/下载链接
+    EH-->>Client: 返回zip下载地址
+    Client->>Store: 下载解压重命名并上传
+    Store-->>Client: 返回图片/压缩包URL
+    Client-->>Server: 回传元数据+URL+Telegraph链接
+    Server->>TGChan: 发送缩略图+描述+Telegraph+备用下载链接
+```
+4. Mermaid 时序图示例（定时爬取自动发现）
+```mermaid
+sequenceDiagram
+    participant Cron as 定时调度器
+    participant Server as Server
+    participant EH as EHentai(列表页)
+    participant DB as 已处理记录表
+    participant Queue as TaskQueue
+    participant Client as ClientNode
+    participant EHDetail as EHentai(画廊详情)
+    participant Store as Storage
+    participant TGChan as TgChannel
+
+    Cron->>Server: 触发定时爬取
+    Server->>EH: 请求列表页(从上次偏移开始)
+    EH-->>Server: 返回画廊条目列表
+    Server->>DB: 比对去重(过滤已处理画廊)
+    DB-->>Server: 返回新增画廊gid/token
+    Server->>Queue: 批量创建任务(来源:自动爬取)
+    Server->>DB: 更新爬取偏移
+    Queue->>Client: 分配任务
+    Client->>EHDetail: 请求画廊信息/标签/下载链接
+    EHDetail-->>Client: 返回元数据+zip下载地址
+    Client->>Store: 下载解压重命名上传
+    Store-->>Client: 返回图片/压缩包URL
+    Client-->>Server: 回传元数据+标签+URL+Telegraph链接
+    Server->>TGChan: 按固定格式发送整合消息
+    Server->>DB: 标记画廊为已处理
+```
+5. 多链接任务排队与并发控制
+   - 同一时间只允许 N 个任务处于「处理中」状态，其余任务自动进入排队队列。
+   - 每个用户在单位时间内可提交的任务数量受限（如每分钟/每小时上限），超出后提示稍后再试。
+   - 队列中任务可根据优先级（如管理员任务优先）或提交时间进行排序。
+6. Cookie / GP 管理与告警流程
+   - 周期性任务定时调用 E-Hentai 相关接口，检查当前账号 GP/Credits 余额。
+   - 当余额低于设定阈值时，向管理员用户 / 频道发送提醒消息。
+   - 若启用自动获取 Cookie，则在 Cookie 即将失效或访问异常时主动触发刷新逻辑。
+7. 自动运维流程
+   - 定时清理下载缓存与临时目录，删除过期任务相关文件。
+   - 定期进行数据库检查点、归档历史压缩等，减少数据损坏风险。
+   - 对 Client 节点进行心跳检测，长时间无响应的节点标记为不可用。
+
+六、安全、风控与合规注意事项
+1. 凭证与敏感信息安全
+   - Telegram Bot Token、Telegraph Token、E-Hentai Cookie、图片床 `imgbed_api_token` 等敏感信息不得写死在代码中，也不得提交到公共仓库。
+   - 推荐通过环境变量或仅保存在服务器本地的配置文件（配合 `.gitignore`）进行管理。
+   - 与图片上传相关的日志禁止打印完整 Token 或包含签名参数的完整上传 URL，只在必要时记录脱敏后的关键信息（如渠道名、文件名、状态码）。
+2. 请求频率与封号风险
+   - 对 E-Hentai 的请求频率需要严格控制，避免短时间内大量并发访问导致封号或封 IP。
+   - 必要时配置代理池或多账号分担访问压力，并做好失败重试与退避策略。
+3. 日志与审计
+   - 日志中避免打印完整 Cookie、下载链接中的敏感参数，可对关键字段做脱敏处理。
+   - 只在 DEBUG 模式下输出详细请求/响应内容，生产环境关闭。
+4. 权限与访问控制
+   - 限制可使用 Bot 的群组 / 频道范围，防止被公开滥用。
+   - 管理命令仅对 `admin` 列表中的用户开放，关键操作（如修改 Cookie、重启节点）需额外确认。

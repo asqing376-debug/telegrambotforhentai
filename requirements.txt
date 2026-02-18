@@ -1,0 +1,8 @@
+python-telegram-bot>=20.0
+httpx>=0.24
+beautifulsoup4>=4.12
+PyYAML>=6.0
+loguru>=0.7
+telegraph-python>=2.0
+pyzipper>=0.3.6
+aiosqlite>=0.19.0
