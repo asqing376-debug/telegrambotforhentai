@@ -15,9 +15,10 @@ from utils.pipeline import run_pipeline
 LINK_PATTERN = re.compile(r"https://e[-x]hentai\.org/g/(\d+)/([0-9a-f]{10})", re.I)
 
 
-def _allowed_chat(chat_id: int) -> bool:
-    allowed = cfg.get("allowed_group") or []
-    return chat_id in allowed
+def _allowed_chat(chat_id: int, user_id: int) -> bool:
+    allowed_groups = cfg.get("allowed_group") or []
+    allowed_users = cfg.get("allowed_user") or []
+    return chat_id in allowed_groups or user_id in allowed_users
 
 
 async def on_gallery_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -31,7 +32,7 @@ async def on_gallery_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id if update.effective_user else 0
 
-    if not _allowed_chat(chat_id):
+    if not _allowed_chat(chat_id, user_id):
         return
 
     if not await can_accept_user(user_id):
@@ -58,7 +59,7 @@ def register(app):
     init_queue()
     app.add_handler(
         MessageHandler(
-            filters.ChatType.GROUPS & filters.Regex(LINK_PATTERN),
+            (filters.ChatType.GROUPS | filters.ChatType.PRIVATE) & filters.Regex(LINK_PATTERN),
             on_gallery_link,
         )
     )

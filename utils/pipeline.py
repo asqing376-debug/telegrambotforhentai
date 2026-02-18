@@ -4,6 +4,8 @@
 """
 import re
 import os
+import html
+import asyncio
 import zipfile
 import shutil
 
@@ -22,10 +24,8 @@ from utils.http_client import http
 TAG_FIELD_ORDER = [
     ("language", "语言"),
     ("parody", "原作"),
-    ("artist", "艺术家"),
     ("group", "团队"),
-    ("mixed", "混合"),
-    ("other", "其他"),
+    ("artist", "艺术家"),
     ("male", "男性"),
 ]
 
@@ -86,23 +86,24 @@ def _make_encrypted_zip(source_dir: str, zip_path: str, password: str) -> None:
 
 
 def _build_channel_caption(
+    title: str,
+    title_jpn: str,
     translated_tags: dict[str, list[str]],
-    filecount: int,
     telegraph_url: str,
     gid: str,
     token: str,
-    backup_message_link: str,
 ) -> str:
     """按固定顺序组装频道消息正文，缺失的标签行跳过。"""
-    lines = []
+    safe_title = html.escape(title)
+    safe_title_jpn = html.escape(title_jpn)
+    lines = [safe_title, safe_title_jpn]
     for ns, label in TAG_FIELD_ORDER:
         tags = translated_tags.get(ns)
         if tags:
-            lines.append(f"{label}: {', '.join(tags)}")
-    lines.append(f"页数: {filecount}")
-    lines.append(f"预览: {telegraph_url}")
+            lines.append(f"{label}: {' '.join(f'#{t}' for t in tags)}")
     lines.append(f"原始地址: https://e-hentai.org/g/{gid}/{token}/")
-    lines.append(f"原档链接: {backup_message_link}")
+    lines.append(f'在线预览: <a href="{telegraph_url}">{safe_title_jpn}</a>')
+    lines.append("备注: 近期网络不稳定，如不显示图片刷新两次即可")
     return "\n".join(lines)
 
 
@@ -162,6 +163,7 @@ async def run_pipeline(gid: str, token: str, bot, source: str = "manual") -> dic
             try:
                 url = await upload_image(fp)
                 image_urls.append(url)
+                await asyncio.sleep(2)
             except Exception as e:
                 logger.error(f"imgbed upload fail {fn}: {e}")
                 raise
@@ -184,12 +186,13 @@ async def run_pipeline(gid: str, token: str, bot, source: str = "manual") -> dic
 
         # 8) 主频道：缩略图 + 标签格式消息
         description = _build_channel_caption(
-            translated_tags, filecount, telegraph_url, gid, token, backup_message_link
+            title, title_jpn, translated_tags, telegraph_url, gid, token
         )
         await bot.send_photo(
             chat_id=channel_main_id,
             photo=thumb_url,
             caption=description,
+            parse_mode="HTML",
         )
 
         # 9) 标记已处理

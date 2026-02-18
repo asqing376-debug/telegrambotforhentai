@@ -4,6 +4,8 @@ admin:
   - 123456789
 allowed_group:
   - -1001234567890
+allowed_user:
+  - 123456789
 
 # E-Hentai（勿提交真实 Cookie 到仓库）
 eh_cookie: "ipb_member_id=xxx; ipb_pass_hash=xxx; igneous=xxx"
